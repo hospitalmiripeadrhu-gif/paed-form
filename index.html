@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>PAED Inventory – Transaksi Keluar</title>
+  <style>
+    *{-webkit-tap-highlight-color:transparent}
+    html{-webkit-text-size-adjust:100%}
+    body{font-family:Arial,sans-serif;background:#f3f6fa;margin:0;padding:14px;color:#172b45}
+    .card{max-width:620px;margin:0 auto;background:#fff;border-radius:14px;padding:20px;box-shadow:0 3px 16px #00000014}
+    h2{margin:0 0 5px;color:#17385f;font-size:21px}
+    .sub{color:#66788a;font-size:13px;margin-bottom:16px}
+    .item{background:#edf4fb;border-left:4px solid #1d4775;padding:13px;border-radius:7px;margin:14px 0}
+    .item strong{display:block;font-size:18px;margin-bottom:5px;word-break:break-word}
+    .meta{font-size:13px;color:#44566c;line-height:1.6}
+    label{display:block;font-weight:600;margin:14px 0 6px;font-size:14px}
+    input,select,textarea{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:7px;font-size:16px;background:#fff;color:#172b45;-webkit-appearance:none;appearance:none}
+    select{background-image:linear-gradient(45deg,transparent 50%,#555 50%),linear-gradient(135deg,#555 50%,transparent 50%);background-position:calc(100% - 20px) 50%,calc(100% - 14px) 50%;background-size:6px 6px;background-repeat:no-repeat;padding-right:34px}
+    button{width:100%;border:0;border-radius:8px;padding:15px;background:#17385f;color:#fff;font-size:16px;font-weight:700;margin-top:20px;cursor:pointer}
+    button:disabled{opacity:.55}
+    button.secondary{background:#e2e8f0;color:#17385f;margin-top:12px}
+    .hint{font-size:12px;color:#68798c;margin-top:5px}
+    #status{margin-top:15px;padding:12px;border-radius:7px;display:none;line-height:1.5;word-break:break-word}
+    .ok{display:block!important;background:#e8f6ed;color:#176534}
+    .err{display:block!important;background:#fff0f0;color:#a32222}
+    .loading{color:#526579;padding:15px 0}
+    .loading.error{color:#a32222}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h2>Borang Transaksi Keluar</h2>
+  <div class="sub">PAED RHU MGH NSC ITEM INVENTORY</div>
+  <div id="loading" class="loading">Memuatkan maklumat item dan batch...</div>
+  <button id="retryBtn" class="secondary" type="button" style="display:none">CUBA LAGI</button>
+  <div id="formArea" style="display:none">
+    <div class="item">
+      <strong id="itemName"></strong>
+      <div class="meta">Item Code: <b id="itemCode"></b><br>
+      Lokasi: <b id="location"></b><br>
+      Jumlah baki semua batch aktif: <b id="totalBalance"></b></div>
+    </div>
+    <form id="issueForm" autocomplete="off">
+      <label for="batch">Batch / Lot No. – FIFO</label>
+      <select id="batch" required></select>
+      <div class="hint">Hanya batch yang mempunyai baki melebihi sifar dipaparkan, mengikut keutamaan FIFO.</div>
+
+      <label for="quantity">Kuantiti Keluar</label>
+      <input id="quantity" type="number" inputmode="decimal" min="0.000001" step="any" required>
+      <div class="hint" id="batchBalance"></div>
+
+      <label for="recipient">Penerima / Tujuan Penggunaan</label>
+      <input id="recipient" type="text" required placeholder="Nama penerima / wad / tujuan">
+
+      <label for="recordedBy">Direkod Oleh</label>
+      <input id="recordedBy" type="text" required placeholder="Nama pegawai" autocomplete="name">
+
+      <label for="remarks">Catatan (jika ada)</label>
+      <textarea id="remarks" rows="3"></textarea>
+      <button id="submitBtn" type="submit">HANTAR TRANSAKSI KELUAR</button>
+    </form>
+  </div>
+  <div id="status"></div>
+</div>
+<script>
+  // === TETAPAN: tampal URL Web App Apps Script (berakhir /exec) ===
+  const API_URL = 'https://script.google.com/macros/s/AKfycbwmOG4wVtchfhb5xkRC1g6zyXuiqHulDQtLOAF80wzctF1Juy1RfGGEZ1rqiXym49Se0Q/exec';
+
+  const q = new URLSearchParams(location.search);
+  const LOCATION = q.get('loc') || '', ITEM_CODE = q.get('code') || '', SIG = q.get('sig') || '';
+  const SUBMIT_LABEL = 'HANTAR TRANSAKSI KELUAR';
+  let issueData = null;
+  const $ = id => document.getElementById(id);
+
+  async function apiGet(params){
+    const r = await fetch(API_URL + '?' + new URLSearchParams(params).toString(), {method:'GET', redirect:'follow'});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error || 'Ralat pelayan.');
+    return j.data;
+  }
+  async function apiSubmit(form){
+    // text/plain = "simple request": tiada preflight CORS, sesuai untuk Apps Script
+    const r = await fetch(API_URL, {
+      method:'POST', redirect:'follow',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({action:'submit', form})
+    });
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error || 'Ralat pelayan.');
+    return j.data;
+  }
+
+  function showStatus(message, isError){
+    const el = $('status');
+    el.textContent = message;
+    el.className = isError ? 'err' : 'ok';
+  }
+  function showLoadError(msg, canRetry){
+    const l = $('loading');
+    l.style.display = 'block';
+    l.className = 'loading error';
+    l.textContent = msg;
+    $('retryBtn').style.display = canRetry ? 'block' : 'none';
+    $('formArea').style.display = 'none';
+  }
+  function saveName(){ try{ localStorage.setItem('paedqr_recordedBy', $('recordedBy').value.trim()); }catch(e){} }
+  function restoreName(){ try{ const v = localStorage.getItem('paedqr_recordedBy'); if(v && !$('recordedBy').value) $('recordedBy').value = v; }catch(e){} }
+
+  async function loadForm(){
+    if(!LOCATION || !ITEM_CODE || !SIG){
+      showLoadError('QR tidak lengkap. Sila imbas semula QR pada item.', false);
+      return;
+    }
+    $('retryBtn').style.display = 'none';
+    $('loading').className = 'loading';
+    $('loading').textContent = 'Memuatkan maklumat item dan batch...';
+    $('loading').style.display = 'block';
+    try{
+      const data = await apiGet({action:'data', loc:LOCATION, code:ITEM_CODE, sig:SIG});
+      issueData = data;
+      $('loading').style.display = 'none';
+      $('formArea').style.display = 'block';
+      $('itemName').textContent = data.item.name;
+      $('itemCode').textContent = data.item.code;
+      $('location').textContent = data.location;
+      $('totalBalance').textContent = data.totalBalance + ' ' + data.item.uom;
+      const sel = $('batch');
+      sel.innerHTML = '';
+      if(!data.batches.length){
+        sel.add(new Option('Tiada batch dengan baki aktif', ''));
+        $('submitBtn').disabled = true;
+      } else {
+        $('submitBtn').disabled = false;
+        data.batches.forEach(b => {
+          sel.add(new Option(b.batchNo + ' | Luput: ' + b.expiryLabel + ' | Baki: ' + b.balance + ' ' + data.item.uom, b.batchNo));
+        });
+      }
+      restoreName();
+      updateBatchBalance();
+    }catch(err){
+      const m = (err && err.message) || String(err);
+      showLoadError(m === 'Failed to fetch' ? 'Sambungan gagal. Semak internet dan cuba lagi.' : m, true);
+    }
+  }
+
+  function updateBatchBalance(){
+    if(!issueData) return;
+    const b = issueData.batches.find(x => x.batchNo === $('batch').value);
+    $('batchBalance').textContent = b ? 'Baki batch dipilih: ' + b.balance + ' ' + issueData.item.uom : '';
+    $('quantity').max = b ? b.balance : '';
+  }
+
+  $('batch').addEventListener('change', updateBatchBalance);
+  $('retryBtn').addEventListener('click', loadForm);
+
+  $('issueForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const btn = $('submitBtn');
+    btn.disabled = true; btn.textContent = 'Menghantar...';
+    saveName();
+    const payload = {
+      location: LOCATION, itemCode: ITEM_CODE, sig: SIG,
+      batchNo: $('batch').value,
+      quantity: $('quantity').value,
+      recipient: $('recipient').value.trim(),
+      recordedBy: $('recordedBy').value.trim(),
+      remarks: $('remarks').value.trim()
+    };
+    try{
+      const res = await apiSubmit(payload);
+      showStatus(res.message + ' No. transaksi: ' + res.transactionNo + '. Baki batch selepas transaksi: ' + res.remainingBalance + '.', false);
+      $('issueForm').reset();
+      await loadForm();
+      window.scrollTo(0, document.body.scrollHeight);
+    }catch(err){
+      const m = (err && err.message) || String(err);
+      showStatus(m === 'Failed to fetch'
+        ? 'Sambungan terputus. Transaksi mungkin sudah direkod – semak dahulu sebelum menghantar semula.'
+        : m, true);
+    }
+    btn.disabled = false; btn.textContent = SUBMIT_LABEL;
+  });
+
+  loadForm();
+</script>
+</body>
+</html>
